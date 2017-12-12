@@ -1,0 +1,47 @@
+{
+	"name": "cocos-creator-suggest",
+	"displayName": "Cocos Creator Suggest",
+	"description": "自動完成提示",
+	"version": "0.0.1",
+	"publisher": "simon",
+	"engines": {
+		"vscode": "^1.18.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onLanguage:javascript"
+	],
+	"main": "./out/extension",
+	"contributes": {
+		"configuration": {
+			"type": "object",
+			"title": "Cocos Creator Suggest Configuration",
+			"properties": {
+				"creator.suggest.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "是否啟用"
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"postinstall": "node ./node_modules/vscode/bin/install",
+		"test": "npm run compile && node ./node_modules/vscode/bin/test"
+	},
+	"devDependencies": {
+		"typescript": "^2.6.1",
+		"vscode": "^1.1.6",
+		"@types/node": "^7.0.43",
+		"@types/mocha": "^2.2.42"
+	},
+	"dependencies": {
+		"acorn": "^5.2.1",
+		"filehound": "^1.16.2"
+	}
+}
