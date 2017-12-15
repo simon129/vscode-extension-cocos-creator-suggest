@@ -1,50 +1,39 @@
-import * as vscode from 'vscode';
+import { Disposable, CompletionItemProvider, window, workspace, TextDocument, Position, CancellationToken, CompletionContext, CompletionItem, Range, CompletionItemKind } from 'vscode';
+import { Property, Identifier } from 'estree';
+
 import * as cocosGlobals from './globals';
+import { Ast, Comment } from './ast';
+import { isCocosCreatorProjectFile } from './util';
 
-import * as fs from 'fs'
-import * as path from 'path';
+export class CocosCreatorCompletionItemProvider implements CompletionItemProvider {
+    private ast: Ast;
 
-import * as FileHound from 'filehound';
-import * as acorn from 'acorn/dist/acorn_loose';
-
-export class CocosCreatorCompletionItemProvider implements vscode.CompletionItemProvider {
-    private map: Map<string, any>;
-
-    constructor(folder: vscode.WorkspaceFolder) {
-        this.map = new Map<string, any>();
-
-        console.time('parse AST');
-        var fsPath = path.resolve(folder.uri.fsPath, 'assets');
-        this.generateAst(fsPath)
-            .catch(err => {
-                console.error(err);
-            }).then(_ => {
-                console.timeEnd('parse AST')
-            });
+    constructor(ast: Ast) {
+        this.ast = ast;
     }
 
-    public provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): Thenable<vscode.CompletionItem[]> {
+    /** CompletionItemProvider 主要的進入點 */
+    public provideCompletionItems(document: TextDocument, position: Position, token: CancellationToken, context: CompletionContext): Thenable<CompletionItem[]> {
         var result = [];
-        if (position.character >= 5) {
+        if (position.character >= 5 && isCocosCreatorProjectFile(document)) {
             // check if the prefix is ' this.' or '.node.'
             var distance = position.character > 5 ? 6 : 5;
-            var startPosition = new vscode.Position(position.line, position.character - distance);
-            var range = new vscode.Range(startPosition, position);
+            var startPosition = new Position(position.line, position.character - distance);
+            var range = new Range(startPosition, position);
             var prefix = document.getText(range);
             // add cc.Component to this
             if (prefix === 'this.' || prefix === ' this.') {
-                this.addCompletion(result, cocosGlobals.componentFunctions, true);
-                this.addCompletion(result, cocosGlobals.componentProperties, false);
-
                 try {
-                    var ast = this.map[document.uri.fsPath];
-                    var body = this.getBody(ast.body)
-                    this.addCompletionAST(result, body.methods, true);
-                    this.addCompletionAST(result, body.properties, false);
+                    var body = this.ast.getAstBody(document.uri.fsPath);
+                    this.addCompletionAST(result, body.methods, true, document.uri.fsPath);
+                    this.addCompletionAST(result, body.properties, false, document.uri.fsPath);
                 }
                 catch (e) {
-                    vscode.window.showErrorMessage(e);
+                    window.showErrorMessage(e);
                 }
+
+                this.addCompletion(result, cocosGlobals.componentFunctions, true);
+                this.addCompletion(result, cocosGlobals.componentProperties, false);
             }
             // add cc.Node to xxx.node
             if (prefix === '.node.') {
@@ -56,10 +45,16 @@ export class CocosCreatorCompletionItemProvider implements vscode.CompletionItem
         return Promise.resolve(result);
     }
 
-    private addCompletion(completionItems: vscode.CompletionItem[], entries: any, isFunction: boolean) {
+    /** 找出特定行數的註解 */
+    private findComment(allComments: Comment[], line: number): Comment {
+        return (allComments || []).find(c => c.loc.line == line);
+    }
+
+    /** 把提示項目加入最後結果(Creator原生的項目) */
+    private addCompletion(completionItems: CompletionItem[], entries: any, isFunction: boolean) {
         for (var name in entries) {
-            var proposal = new vscode.CompletionItem(name);
-            proposal.kind = isFunction ? vscode.CompletionItemKind.Function : vscode.CompletionItemKind.Property;
+            var proposal = new CompletionItem(name);
+            proposal.kind = isFunction ? CompletionItemKind.Function : CompletionItemKind.Property;
             var entry = entries[name];
             if (entry.description) {
                 proposal.documentation = entry.description;
@@ -71,108 +66,22 @@ export class CocosCreatorCompletionItemProvider implements vscode.CompletionItem
         }
     };
 
-    private addCompletionAST(completionItems: vscode.CompletionItem[], entries: any, isFunction: boolean) {
+    /** 把提示項目加入最後結果(我們自己解析的) */
+    private addCompletionAST(completionItems: CompletionItem[], entries: Property[], isFunction: boolean, key: string) {
         entries.forEach(node => {
-            var name = node.key.name;
-            var proposal = new vscode.CompletionItem(name);
-            proposal.kind = isFunction ? vscode.CompletionItemKind.Function : vscode.CompletionItemKind.Property;
+            var name = (node.key as Identifier).name;
+
+            var proposal = new CompletionItem(name, isFunction ? CompletionItemKind.Function : CompletionItemKind.Property);
             proposal.detail = name;
-            proposal.documentation = name;
-            // make it to first item
-            proposal.sortText = '';
+
+            var allComments = this.ast.getComments(key);
+            var methodLine = node.loc.start.line;
+            var comment = this.findComment(allComments, methodLine) || this.findComment(allComments, methodLine - 1);
+            proposal.documentation = comment && comment.text || name;
+
+            // make it to top
+            proposal.sortText = isFunction ? '00' : '01';
             completionItems.push(proposal);
         });
     }
-
-    private generateAst(fsPath): Promise<any> {
-        return FileHound.create()
-            .paths(fsPath)
-            .ext('js')
-            .find()
-            .then(files => {
-                // series (promise chain)
-                var p = Promise.resolve();
-                files.forEach(file => {
-                    p = p.then(() => new Promise<any>((resolve, reject) => {
-                        fs.readFile(file, 'utf8', (err, data) => {
-                            if (err) { return reject(err); }
-
-                            var data = fs.readFileSync(file, 'utf8');
-                            this.map[file] = acorn.parse_dammit(data);
-                            return resolve();
-                        });
-                    }));
-                });
-                return p;
-
-                // series (block/sync)
-                // files.forEach(file => {
-                //     var data = fs.readFileSync(file, 'utf8');
-                //     this.map[file] = acorn.parse_dammit(data);
-                // });
-
-                // parallel (promise.all)
-                // return Promise.all(
-                //     files.map(file => {
-                //         return new Promise<any>((resolve, reject) => {
-                //             fs.readFile(file, 'utf8', (err, data) => {
-                //                 if (err) { return reject(err); }
-                //                 var data = fs.readFileSync(file, 'utf8');
-                //                 this.map[file] = acorn.parse_dammit(data);
-                //                 return resolve();
-                //             });
-                //         })
-                //     })
-                // );
-            });
-    }
-
-    private getBody(body: any): any {
-        var clazzes = body
-            .map(node => {
-                // var Lobby = cc.Class({})
-                var expression = null;
-                if (node.type == 'VariableDeclaration' && node.declarations[0].init.type == 'CallExpression') {
-                    expression = node.declarations[0].init;
-
-                    // cc.Class({})
-                } else if (node.type == 'ExpressionStatement' && node.expression.type == 'CallExpression') {
-                    expression = node.expression;
-                }
-
-                if (expression) {
-                    var { object, property } = expression.callee;
-                    if (object && object.name == 'cc' && property && property.name == 'Class') {
-                        // {} in cc.Class({})
-                        var properties = expression.arguments[0].properties
-                        return {
-                            node: node,
-
-                            methods: properties.filter(prop => {
-                                return ['extends', 'properties'].indexOf(prop.key.name) == -1
-                            }),
-
-                            properties: (
-                                properties.find(prop => prop.key.name == 'properties')
-                                || { value: { properties: [] } }
-                            ).value.properties,
-                        }
-                    }
-                }
-            })
-            .filter(x => x)
-
-        return clazzes[0];
-
-        // clazzes.forEach((clazz, i) => {
-        //     clazz.methods.forEach(method => {
-        //         console.log('methods:', method.key.name)
-        //     });
-
-        //     clazz.properties.forEach(prop => {
-        //         console.log('properties:', prop.key.name);
-        //     })
-        // });
-    }
-
 }
